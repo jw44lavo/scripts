@@ -6,6 +6,7 @@ dir_env = "/home/johann/OneDrive/Projects/commonplace/environments"
 
 
 process get_few_reads {
+  //publishDir "${dir_scripts}", mode: "copy"
 
   input:
     file x //all reads
@@ -52,7 +53,6 @@ process minimap2_indexing {
 process minimap2_mapping {
   //publishDir "${dir_scripts}", mode: "copy"
 
-
   input:
     file x  //indexed reference genome 
     each y  //read to map
@@ -67,7 +67,7 @@ process minimap2_mapping {
 }
 
 process mashmap_mapping {
-  publishDir "${dir_scripts}", mode: "copy"
+  //publishDir "${dir_scripts}", mode: "copy"
   
   input:
     file x //reference genome
@@ -82,15 +82,104 @@ process mashmap_mapping {
     """
 }
 
+process centrifuge_prepare_taxonomy {
+  
+  conda "${dir_env}/centrifuge2019-11-29.yml"
+   
+  output:
+    file "taxonomy"
+  
+  script:
+    """
+    centrifuge-download -o taxonomy taxonomy
+    """
+}
+
+process centrifuge_prepare_library {
+  
+  conda "${dir_env}/centrifuge2019-11-29.yml"
+  
+  output:
+    file "seqid2taxid.map"
+  
+  script:
+    """
+    centrifuge-download -o library -m -d "bacteria" refseq > seqid2taxid.map
+    """
+    //-m --> mask low-complexity regions
+}
+
+process centrifuge_prepare_reference {
+  
+  conda "${dir_env}/centrifuge2019-11-29.yml"
+  
+  input:
+    path x
+
+  output:
+    file "input-sequences.fna"
+  
+  script:
+    """
+    cat ${x}/*/*.fna > input-sequences.fna
+    """
+}
+
+process centrifuge_indexing {
+  
+  conda "${dir_env}/centrifuge2019-11-29.yml"
+  
+  input:
+    file seqid2taxid.map 
+    file nodes.dmp
+    file names.dmp
+    file input-sequences.fna
+
+  output:
+    file "abv"
+  
+  script:
+    """
+    centrifuge-build -p 4 --conversion-table ${seqid2taxid.map} \
+                 --taxonomy-tree ${nodes.dmp} --name-table ${names.dmp} \
+                 ${input-sequences.fna} abv
+    """
+    //-p 4 --> 4 Threads
+}
+
+
+
+process centrifuge_mapping {
+  //publishDir "${dir_scripts}", mode: "copy" 
+  
+  conda "${dir_env}/centrifuge2019-11-29.yml"
+
+  input:
+    file x
+    each y 
+
+  output:
+    stdout "${y.baseName}.out"
+
+  script:
+    """
+    centrifuge -f -x test ${y}
+    """
+}
+
 workflow {
     main:
 
       ref = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/data/zymo_mock_community/genomes/ref/zymo_all/zymo_all.fasta")
       reads = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/data/zymo_mock_community/genomes/reads/zymo-GridION_few_reads.fastq")
-      
+      taxonomy_cf = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/scripts/taxonomy")
+      library_cf = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/scripts/library")
+            
       r = get_single_reads(reads).flatten()
-      //r = Channel.fromPath("${dir_scripts}/*.fastq")
-     
+
+
+
+      // Minimap2 - Workflow
       /*
       db = minimap2_indexing(ref)
       //db = Channel.fromPath("${dir_scripts}/zymo_all.mmi")
@@ -98,31 +187,35 @@ workflow {
       minimap2_mapping(db, r)
       */
 
+
+
+      // MashMap - Workflow
+      /*
       mashmap_mapping(ref, r)
       //mashmap_mapping.out.view()
-    
+      */
+
+
+
+      // Centrifuge - Workflow
       
+      //centrifuge_prepare_taxonomy()   funktioniert, dauert kurz (1-3 min)
+      //tax_cf = centrifuge_prepare_library()    noch am Testen, dauert sehr lange (~16 h überschlagen)
+      //cat_cf = centrifuge_prepare_reference(library_cf)
+      //index_cf = centrifuge_indexing(tax_cf, "${taxonomy}/nodes.dmp", "${taxonomy}/names.dmp", cat_cf)
+      //centrifuge_mapping(index_cf, r)
 
 }
 
 
-/*
-Idee:
-    reads von sequenzierung gruppieren (get_few_reads.py) z.B. 10 (auch mit 1 oder 100 möglich)
-    diese n ausgewählten reads mappen
-    mapping analysieren und taxonomischen baum herunterwandern
-        wiederhole solange mit nächsten gruppen von reads bis bestimmte
-        parameter erreicht, sodass aussage über taxon/organismus/stamm möglich
-        bzw.
-        in "real time" anzeigen, welche entscheidung akutell getroffen
 
-Anmerkungen zur Idee:
-    (Pan-)Proteom-Datenbank schon fertig und schon indexed
-        (je nach mapper gucken, welche vorverarbeitung nötig)
 
-    externer "read-count" nötig, um nicht immer wieder die gleichen reads zu mappen
 
-*/
+
+
+
+
+
 
 /*
 process make_diamond_db {

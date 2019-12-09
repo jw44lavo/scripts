@@ -12,8 +12,10 @@ process get_few_reads {
     file x //all reads
     val u  //number_of_reads
     val v  //current_read_count
+  
   output:
     file "${x.baseName}_${u}_${v}.fastq"
+  
   script:
     """
     python3 ${dir_scripts}/get_few_reads.py ${x} ${u} ${v}
@@ -32,6 +34,21 @@ process get_single_reads {
   script:
     """
     python3 ${dir_scripts}/get_single_reads.py ${x}
+    """
+}
+
+process get_ids {
+  //publishDir "${dir_scripts}", mode: "copy"
+
+  input:
+    file x //reference fasta file
+
+  output:
+    file "${x.baseName}_ids.txt"
+
+  script:
+    """
+    grep ">" ${x} | cut -c2- > ${x.baseName}_ids.txt
     """
 }
 
@@ -58,11 +75,26 @@ process minimap2_mapping {
     each y  //read to map
 
   output:
-    file "${y.baseName}.sam"
+    file "${y.baseName}_minimap2.sam"
 
   script:
     """
-    minimap2 -ax map-ont ${x} ${y} > ${y.baseName}.sam
+    minimap2 -ax map-ont ${x} ${y} > ${y.baseName}_minimap2.sam
+    """
+}
+
+process minimap2_evaluate {
+  publishDir "${dir_scripts}", mode: "copy"
+
+  input:
+    file x
+
+  output:
+    file "${x.baseName}_stats.out"
+
+  script:
+    """
+    samtools flagstat ${x} >> ${x.baseName}_stats.out
     """
 }
 
@@ -79,6 +111,23 @@ process mashmap_mapping {
   script: //Achtung: bei --pi 75 ist der pc eingefroren
     """
     mashmap -r ${x} -q ${y} -s 2500 --pi 85 -o ${y.baseName}_mashmap.out 
+    """
+}
+
+process mashmap_evaluate {
+  publishDir "${dir_scripts}", mode: "copy"
+
+  input:
+    file x //mashmap.out file
+    file y //reads file --> nur für read count zur berechnung der statistik. !!!noch mal überdenken, da das zählen bei großen files extrem lang dauern könnte!
+    file z //id file
+
+  output:
+    file "${x.baseName}_stats.out"
+
+  script:
+    """
+    python3 ${dir_scripts}/evaluate_mapping_mashmap.py ${x} ${y} ${z} >> ${x.baseName}_stats.out
     """
 }
 
@@ -167,37 +216,38 @@ process centrifuge_mapping {
     """
 }
 
+
+
 workflow {
     main:
 
-      ref = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/data/zymo_mock_community/genomes/ref/zymo_all/zymo_all.fasta")
-      reads = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/data/zymo_mock_community/genomes/reads/zymo-GridION_few_reads.fastq")
+      ref         = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/data/zymo_mock_community/genomes/ref/zymo_all/zymo_all.fasta")
+      reads       = Channel.fromPath("/home/johann/Local/data/Zymo-GridION-EVEN-BB-SN-PCR-R10HC-flipflop.fq")
       taxonomy_cf = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/scripts/taxonomy")
-      library_cf = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/scripts/library")
+      library_cf  = Channel.fromPath("/home/johann/OneDrive/Projects/commonplace/scripts/library")
             
-      r = get_single_reads(reads).flatten()
+      //r = get_single_reads(few_reads).flatten()
+
+      /********** Data acquisition - Workflow ****************************************************/ 
+      few_reads       = get_few_reads(reads, 100, 0)
+      ids             = get_ids(ref)
 
 
-
-      // Minimap2 - Workflow
-      /*
-      db = minimap2_indexing(ref)
-      //db = Channel.fromPath("${dir_scripts}/zymo_all.mmi")
+      /********** Minimap2 - Workflow ************************************************************/ 
       
-      minimap2_mapping(db, r)
-      */
+      
+      mm2_db          = minimap2_indexing(ref)   //db = Channel.fromPath("${dir_scripts}/zymo_all.mmi")
+      mm2_mapping     = minimap2_mapping(mm2_db, few_reads)
+      mm2_evaluation  = minimap2_evaluate(mm2_mapping)
+      
+
+      /********** MashMap - Workflow *************************************************************/
+      
+      mmp_mapping     = mashmap_mapping(ref, few_reads)
+      mmp_evaluation  = mashmap_evaluate(mmp_mapping, few_reads, ids)
 
 
-
-      // MashMap - Workflow
-      /*
-      mashmap_mapping(ref, r)
-      //mashmap_mapping.out.view()
-      */
-
-
-
-      // Centrifuge - Workflow
+      /********** Centrifuge - Workflow **********************************************************/
       
       //centrifuge_prepare_taxonomy()   funktioniert, dauert kurz (1-3 min)
       //tax_cf = centrifuge_prepare_library()    noch am Testen, dauert sehr lange (~16 h überschlagen)
@@ -206,46 +256,3 @@ workflow {
       //centrifuge_mapping(index_cf, r)
 
 }
-
-
-
-
-
-
-
-
-
-
-
-/*
-process make_diamond_db {
-
-  input:
-    file x  //protein database
-  
-  output:
-    file "${x.baseName}.dmnd" //indexed protein database
-  
-  script:
-    """
-    diamond makedb --in ${x} --db "${x.baseName}.dmnd"
-    """
-}
-
-process map_diamond {
-  //publishDir "/home/johann/OneDrive/Projects/commonplace/scripts/", mode: "copy"
-
-  input:
-   file x //indexed protein database
-   file y //reads to map
-
-  output:
-    file "${y}_matches.m8" //output in BLAST tabular format
-  
-  script:
-    """
-    diamond blastx --db ${x} -q ${y} -o ${y}_matches.m8
-    """
-}
-*/
-
